@@ -1,0 +1,7 @@
+subject,light_dist_cm,cosine_dist,threshold,verified,false_reject,detect_failed
+s01,90,0.5303,0.4,True,False,False
+s01,75,0.4994,0.4,True,False,False
+s01,60,0.4115,0.4,True,False,False
+s01,45,0.4503,0.4,True,False,False
+s01,30,0.4877,0.4,True,False,False
+s01,15,0.5105,0.4,True,False,False

@@ -1,0 +1,7 @@
+subject,light_dist_cm,illuminance_rel,threshold,clahe,cosine_dist,norm_dist,margin,confidence_pct,processing_s,verified,false_reject,detect_failed,skip_reason
+s01,90,1.0,0.4,True,0.530298,1.3257,-0.130298,0.0,5.39,True,False,False,
+s01,75,1.44,0.4,True,0.499367,1.2484,-0.099367,0.0,2.207,True,False,False,
+s01,60,2.25,0.4,True,0.411549,1.0289,-0.011549,0.0,1.71,True,False,False,
+s01,45,4.0,0.4,True,0.450262,1.1257,-0.050262,0.0,2.31,True,False,False,
+s01,30,9.0,0.4,True,0.48769,1.2192,-0.08769,0.0,1.881,True,False,False,
+s01,15,36.0,0.4,True,0.510495,1.2762,-0.110495,0.0,1.824,True,False,False,

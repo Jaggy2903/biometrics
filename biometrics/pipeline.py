@@ -1,0 +1,276 @@
+import os
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+import warnings
+warnings.filterwarnings("ignore")
+
+import tensorflow as tf
+tf.get_logger().setLevel("ERROR")
+
+from deepface import DeepFace
+import cv2
+import pandas as pd
+import time
+import math
+from scipy.stats import spearmanr, kendalltau, kruskal, pearsonr
+
+# ── Configuratie ──────────────────────────────────────────────────────────────
+LIGHT_DISTANCES_CM = [90, 75, 60, 45, 30, 15]
+SUBJECTS           = ["s01", "s02", "s03", "s04", "s05",
+                      "s06", "s07", "s08", "s09", "s10"]
+DATA_DIR           = "./data"
+MODEL              = "VGG-Face"
+METRIC             = "cosine"
+THRESHOLD          = 0.40
+USE_CLAHE          = True
+
+# ── CLAHE preprocessing ───────────────────────────────────────────────────────
+def apply_clahe(img_path):
+    img = cv2.imread(img_path)
+    if img is None:
+        raise FileNotFoundError(f"Kon afbeelding niet laden: {img_path}")
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    l = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(l)
+    return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
+
+def load_img(path):
+    return apply_clahe(path) if USE_CLAHE else path
+
+def illuminance(dist_cm):
+    """Relatieve lichtsterkte via inverse kwadraatwet (genormaliseerd op 90cm=1.0)."""
+    return round((90 / dist_cm) ** 2, 4)
+
+# ── Progress bar ──────────────────────────────────────────────────────────────
+def progress(done, total, subject, dist_cm):
+    pct    = done / total
+    width  = 30
+    filled = int(width * pct)
+    bar    = "█" * filled + "░" * (width - filled)
+    print(f"\r  [{bar}] {done}/{total}  {subject} @ {dist_cm}cm   ", end="", flush=True)
+
+# ── Hoofdloop ─────────────────────────────────────────────────────────────────
+records  = []
+total    = len(SUBJECTS) * len(LIGHT_DISTANCES_CM)
+done     = 0
+t_start  = time.time()
+
+clahe_label = "met CLAHE" if USE_CLAHE else "zonder CLAHE"
+print(f"\n🚀 Pipeline gestart — {len(SUBJECTS)} proefpersonen × {len(LIGHT_DISTANCES_CM)} afstanden = {total} vergelijkingen ({clahe_label})\n")
+
+for subject in SUBJECTS:
+    ref_path = os.path.join(DATA_DIR, subject, "reference.jpg")
+
+    if not os.path.exists(ref_path):
+        print(f"  ⚠  Referentie niet gevonden: {ref_path} — subject overgeslagen")
+        done += len(LIGHT_DISTANCES_CM)
+        continue
+
+    for dist_cm in LIGHT_DISTANCES_CM:
+        done += 1
+        test_path = os.path.join(DATA_DIR, subject, f"{dist_cm}cm.jpg")
+        progress(done, total, subject, dist_cm)
+
+        base = {
+            "subject"         : subject,
+            "light_dist_cm"   : dist_cm,
+            "illuminance_rel" : illuminance(dist_cm),
+            "threshold"       : THRESHOLD,
+            "clahe"           : USE_CLAHE,
+        }
+
+        if not os.path.exists(test_path):
+            records.append({**base,
+                            "cosine_dist"   : None,
+                            "norm_dist"     : None,
+                            "margin"        : None,
+                            "confidence_pct": None,
+                            "processing_s"  : None,
+                            "verified"      : False,
+                            "false_reject"  : True,
+                            "detect_failed" : False,
+                            "skip_reason"   : "testfoto_ontbreekt",
+                            })
+            print(f"\n  ⚠  Testfoto ontbreekt: {test_path}")
+            continue
+
+        try:
+            t0 = time.time()
+            result = DeepFace.verify(
+                img1_path         = load_img(ref_path),
+                img2_path         = load_img(test_path),
+                model_name        = MODEL,
+                distance_metric   = METRIC,
+                enforce_detection = True,
+                align             = True,
+                silent            = True,
+            )
+            proc_s = round(time.time() - t0, 3)
+
+            cosine      = round(result["distance"], 6)
+            verified    = result["verified"]
+            norm_dist   = round(cosine / THRESHOLD, 4)
+            margin      = round(THRESHOLD - cosine, 6)
+            confidence  = round(max(0.0, min(100.0, (1 - cosine / THRESHOLD) * 100)), 2)
+
+            records.append({**base,
+                            "cosine_dist"   : cosine,
+                            "norm_dist"     : norm_dist,
+                            "margin"        : margin,
+                            "confidence_pct": confidence,
+                            "processing_s"  : proc_s,
+                            "verified"      : verified,
+                            "false_reject"  : not verified,
+                            "detect_failed" : False,
+                            "skip_reason"   : None,
+                            })
+
+            status = "✓ MATCH " if verified else "✗ REJECT"
+            print(f"\n  [{done:>3}/{total}] {subject} @ {dist_cm:>2}cm  "
+                  f"cosine: {cosine:.4f}  norm: {norm_dist:.3f}  "
+                  f"conf: {confidence:.1f}%  {proc_s:.2f}s  {status}")
+
+        except ValueError:
+            records.append({**base,
+                            "cosine_dist"   : None,
+                            "norm_dist"     : None,
+                            "margin"        : None,
+                            "confidence_pct": None,
+                            "processing_s"  : None,
+                            "verified"      : False,
+                            "false_reject"  : True,
+                            "detect_failed" : True,
+                            "skip_reason"   : "geen_gezicht",
+                            })
+            print(f"\n  [{done:>3}/{total}] {subject} @ {dist_cm:>2}cm  ⚠ Gezicht niet gedetecteerd")
+
+        except Exception as e:
+            records.append({**base,
+                            "cosine_dist"   : None,
+                            "norm_dist"     : None,
+                            "margin"        : None,
+                            "confidence_pct": None,
+                            "processing_s"  : None,
+                            "verified"      : False,
+                            "false_reject"  : True,
+                            "detect_failed" : True,
+                            "skip_reason"   : f"fout:{e}",
+                            })
+            print(f"\n  [{done:>3}/{total}] {subject} @ {dist_cm:>2}cm  ✗ Fout: {e}")
+
+# ── Opslaan ───────────────────────────────────────────────────────────────────
+elapsed = round(time.time() - t_start, 1)
+df = pd.DataFrame(records)
+out_csv = f"results_{'clahe' if USE_CLAHE else 'raw'}.csv"
+df.to_csv(out_csv, index=False)
+print(f"\n\n✅ Klaar in {elapsed}s — {len(records)} rijen opgeslagen in {out_csv}\n")
+
+# ── Samenvatting per lichtafstand ─────────────────────────────────────────────
+df_v = df[df["cosine_dist"].notna()]   # alleen valide rijen
+
+summary = (
+    df.groupby("light_dist_cm")
+    .agg(
+        n_totaal       = ("subject",         "count"),
+        n_valid        = ("cosine_dist",      lambda x: x.notna().sum()),
+        gem_cosine     = ("cosine_dist",      "mean"),
+        median_cosine  = ("cosine_dist",      "median"),
+        std_cosine     = ("cosine_dist",      "std"),
+        min_cosine     = ("cosine_dist",      "min"),
+        max_cosine     = ("cosine_dist",      "max"),
+        q25            = ("cosine_dist",      lambda x: x.quantile(0.25)),
+        q75            = ("cosine_dist",      lambda x: x.quantile(0.75)),
+        gem_marge      = ("margin",           "mean"),
+        gem_conf       = ("confidence_pct",   "mean"),
+        gem_proc_s     = ("processing_s",     "mean"),
+        FRR            = ("false_reject",     "mean"),
+        n_detect_fail  = ("detect_failed",    "sum"),
+        illuminance    = ("illuminance_rel",  "first"),
+    )
+    .reset_index()
+    .sort_values("light_dist_cm", ascending=False)
+)
+
+summary["FRR_%"]    = (summary["FRR"] * 100).round(1)
+summary["IQR"]      = (summary["q75"] - summary["q25"]).round(4)
+summary["CV_%"]     = (summary["std_cosine"] / summary["gem_cosine"] * 100).round(1)
+summary["range"]    = (summary["max_cosine"] - summary["min_cosine"]).round(4)
+
+for col in ["gem_cosine","median_cosine","std_cosine","min_cosine","max_cosine","gem_marge","gem_conf","gem_proc_s"]:
+    summary[col] = summary[col].round(4)
+
+# Samenvatting CSV opslaan
+sum_csv = f"results_summary_{'clahe' if USE_CLAHE else 'raw'}.csv"
+summary.drop(columns=["FRR","q25","q75"]).to_csv(sum_csv, index=False)
+print(f"📊 Samenvatting opgeslagen in {sum_csv}\n")
+
+# Print tabel
+SEP = "─" * 100
+print("── Samenvatting per lichtafstand " + "─" * 68)
+header = (f"{'Afst':>5}  {'Illum':>5}  {'gem':>7}  {'med':>7}  {'std':>6}  "
+          f"{'IQR':>6}  {'CV%':>5}  {'range':>6}  {'marge':>7}  {'conf%':>6}  "
+          f"{'FRR%':>5}  {'fail':>4}  {'proc_s':>6}")
+print(header)
+print(SEP)
+for _, r in summary.iterrows():
+    def f(v, fmt=".4f"):
+        return f"{v:{fmt}}" if pd.notna(v) else "   n/a"
+    print(
+        f"{int(r.light_dist_cm):>4}cm  "
+        f"{r.illuminance:>5.2f}  "
+        f"{f(r.gem_cosine):>7}  "
+        f"{f(r.median_cosine):>7}  "
+        f"{f(r.std_cosine):>6}  "
+        f"{f(r.IQR):>6}  "
+        f"{f(r['CV_%'],'.1f'):>5}  "
+        f"{f(r.range):>6}  "
+        f"{f(r.gem_marge):>7}  "
+        f"{f(r.gem_conf,'.1f'):>6}  "
+        f"{r['FRR_%']:>5.1f}%  "
+        f"{int(r.n_detect_fail):>4}  "
+        f"{f(r.gem_proc_s,'.2f'):>6}"
+    )
+
+print(SEP)
+
+# ── Correlatie-analyse ────────────────────────────────────────────────────────
+df_corr = df_v[["light_dist_cm", "cosine_dist", "illuminance_rel"]].dropna()
+
+if len(df_corr) >= 4:
+    pr,  pp  = pearsonr( df_corr["light_dist_cm"], df_corr["cosine_dist"])
+    sr,  sp  = spearmanr(df_corr["light_dist_cm"], df_corr["cosine_dist"])
+    kr,  kp  = kendalltau(df_corr["light_dist_cm"], df_corr["cosine_dist"])
+    ir,  ip  = spearmanr(df_corr["illuminance_rel"], df_corr["cosine_dist"])
+
+    print("\n── Correlatie: lichtafstand ↔ cosine distance ──────────────────────────")
+    print(f"  Pearson  r  = {pr:+.4f}  (p = {pp:.4f})  {'✓ sign.' if pp < 0.05 else '✗ niet sign.'}")
+    print(f"  Spearman ρ  = {sr:+.4f}  (p = {sp:.4f})  {'✓ sign.' if sp < 0.05 else '✗ niet sign.'}")
+    print(f"  Kendall  τ  = {kr:+.4f}  (p = {kp:.4f})  {'✓ sign.' if kp < 0.05 else '✗ niet sign.'}")
+    print(f"  Spearman ρ  (illuminantie ↔ cosine) = {ir:+.4f}  (p = {ip:.4f})")
+
+# ── Kruskal-Wallis H-test ─────────────────────────────────────────────────────
+groups = [g["cosine_dist"].dropna().values
+          for _, g in df_v.groupby("light_dist_cm")
+          if g["cosine_dist"].notna().sum() >= 2]
+
+if len(groups) >= 2:
+    H, kp = kruskal(*groups)
+    print(f"\n── Kruskal-Wallis H-test ──────────────────────────────────────────────")
+    print(f"  H = {H:.4f},  p = {kp:.4f}  "
+          f"{'→ distributies significant verschillend (p<0.05)' if kp < 0.05 else '→ geen significant verschil'}")
+
+# ── Totaaloverzicht ───────────────────────────────────────────────────────────
+n_valid   = df[~df["detect_failed"]].shape[0]
+n_failed  = int(df["detect_failed"].sum())
+n_missing = int(df["skip_reason"].eq("testfoto_ontbreekt").sum())
+overall_frr = df["false_reject"].mean() * 100
+avg_proc  = df["processing_s"].mean()
+
+print(f"\n── Totaal ─────────────────────────────────────────────────────────────")
+print(f"  Model: {MODEL}  |  Metric: {METRIC}  |  Threshold: {THRESHOLD}  |  CLAHE: {USE_CLAHE}")
+print(f"  Vergelijkingen: {len(records)}  |  Valide: {n_valid}  |  Detect-fout: {n_failed}  |  Ontbrekend: {n_missing}")
+print(f"  Overall FRR: {overall_frr:.1f}%")
+if pd.notna(avg_proc):
+    print(f"  Gem. verwerkingstijd: {avg_proc:.2f}s per vergelijking")
+print(SEP)
