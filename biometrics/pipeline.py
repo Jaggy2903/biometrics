@@ -174,16 +174,24 @@ for subject in SUBJECTS:
             )
             proc_s = round(time.time() - t0, 3)
 
+            # Lower cosine distances indicate that the two faces are more similar
             cosine      = round(result["distance"], 6)
             verified    = result["verified"]
+
+            # Express the distance relative to the decision threshold
             norm_dist   = round(cosine / THRESHOLD, 4)
+
+            # Calculate how far the result is from the verification threshold
             margin      = round(THRESHOLD - cosine, 6)
 
+            # Use the confidence value returned by DeepFace if available. 
+            # Otherwise, estimate a confidence percentage from the cosine distance
             if "confidence" in result and result["confidence"] is not None:
                 confidence = round(float(result["confidence"]), 2)
             else:
                 confidence = round(max(0.0, min(100.0, (1 - cosine / THRESHOLD) * 100)), 2)
 
+            # Store the results of this comparison
             records.append({**base,
                             "cosine_dist"   : cosine,
                             "norm_dist"     : norm_dist,
@@ -200,7 +208,10 @@ for subject in SUBJECTS:
             print(f"\n  [{done:>3}/{total}] {subject} @ {dist_cm:>3}cm  "
                   f"cosine: {cosine:.4f}  norm: {norm_dist:.3f}  "
                   f"conf: {confidence:.1f}%  {proc_s:.2f}s  {status}")
+            
 
+        # No face could be detected in one of the images.
+        # Record this separately from recognition errors
         except ValueError:
             records.append({**base,
                             "cosine_dist"   : None,
@@ -215,6 +226,7 @@ for subject in SUBJECTS:
                             })
             print(f"\n  [{done:>3}/{total}] {subject} @ {dist_cm:>3}cm  ⚠ Gezicht niet gedetecteerd")
 
+        # Record unexpected errors without stopping the experiment
         except Exception as e:
             records.append({**base,
                             "cosine_dist"   : None,
@@ -229,15 +241,27 @@ for subject in SUBJECTS:
                             })
             print(f"\n  [{done:>3}/{total}] {subject} @ {dist_cm:>3}cm  ✗ Fout: {e}")
 
-# ── Opslaan ───────────────────────────────────────────────────────────────────
+
+# ============================================================================= 
+#  Save all collected results to a CSV file for later analysis. 
+# =============================================================================
+
+# ── Saving ───────────────────────────────────────────────────────────────────
 elapsed = round(time.time() - t_start, 1)
 df = pd.DataFrame(records)
 out_csv = f"results_{'clahe' if USE_CLAHE else 'raw'}_15to135.csv"
 df.to_csv(out_csv, index=False)
 print(f"\n\n Klaar in {elapsed}s — {len(records)} rijen opgeslagen in {out_csv}\n")
 
-# ── Samenvatting per lichtafstand ─────────────────────────────────────────────
-df_v = df[df["cosine_dist"].notna()]   # alleen valide rijen
+
+# ============================================================================= 
+# Calculate descriptive statistics for each lighting distance. 
+#  These values summarize recognition performance under each condition. 
+# =============================================================================
+
+# ── Summary per light distance ─────────────────────────────────────────────
+# Only valid rows
+df_v = df[df["cosine_dist"].notna()]   
 
 summary = (
     df.groupby("light_dist_cm")
@@ -275,7 +299,12 @@ sum_csv = f"results_summary_{'clahe' if USE_CLAHE else 'raw'}_15to135.csv"
 summary.drop(columns=["FRR","q25","q75"]).to_csv(sum_csv, index=False)
 print(f"📊 Samenvatting opgeslagen in {sum_csv}\n")
 
-# ── Print tabel ───────────────────────────────────────────────────────────────
+# ============================================================================= 
+# Print a readable table in the terminal. 
+# This allows quick inspection without opening the CSV file
+# =============================================================================
+
+# ── Print table ───────────────────────────────────────────────────────────────
 SEP = "─" * 110
 print("── Samenvatting per lichtafstand " + "─" * 78)
 header = (f"{'Afst':>6}  {'Illum':>7}  {'gem':>7}  {'med':>7}  {'std':>6}  "
@@ -306,7 +335,12 @@ for _, r in summary.iterrows():
 
 print(SEP)
 
-# ── Correlatie-analyse ────────────────────────────────────────────────────────
+# ============================================================================= 
+# Statistical analysis: correlation tests 
+# These test whether lighting distance or illuminance affects recognition. 
+# =============================================================================
+
+# ── Correlation-analysis ────────────────────────────────────────────────────────
 df_corr = df_v[["light_dist_cm", "cosine_dist", "illuminance_rel"]].dropna()
 
 if len(df_corr) >= 4:
@@ -321,6 +355,11 @@ if len(df_corr) >= 4:
     print(f"  Kendall  τ  = {kr:+.4f}  (p = {kp:.4f})  {'✓ sign.' if kp < 0.05 else '✗ niet sign.'}")
     print(f"  Spearman ρ  (illuminantie ↔ cosine) = {ir:+.4f}  (p = {ip:.4f})")
 
+# ============================================================================= 
+# Non-parametric group comparison 
+# Tests whether different lighting distances produce different distributions. 
+# =============================================================================
+
 # ── Kruskal-Wallis H-test ─────────────────────────────────────────────────────
 groups = [g["cosine_dist"].dropna().values
           for _, g in df_v.groupby("light_dist_cm")
@@ -332,7 +371,13 @@ if len(groups) >= 2:
     print(f"  H = {H:.4f},  p = {p_kw:.4f}  "
           f"{'→ distributies significant verschillend (p<0.05)' if p_kw < 0.05 else '→ geen significant verschil'}")
 
-# ── Totaaloverzicht ───────────────────────────────────────────────────────────
+
+# ============================================================================= 
+# Final experiment summary 
+# Overall system performance and failure breakdown. 
+# =============================================================================
+
+# ── Final summary ───────────────────────────────────────────────────────────
 n_valid   = df[~df["detect_failed"]].shape[0]
 n_failed  = int(df["detect_failed"].sum())
 n_missing = int(df["skip_reason"].eq("testfoto_ontbreekt_jpg_jpeg").sum())
