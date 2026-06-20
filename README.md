@@ -313,7 +313,8 @@ https://github.com/serengil/deepface
 ## Purpose of This Project
 
 To evaluate:
+
+* Robustness of DeepFace under varying illumination
 * Impact of lighting distance on recognition stability
 * Statistical significance of lighting effects on biometric systems
-
 ---
