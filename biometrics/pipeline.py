@@ -1,20 +1,48 @@
+# ============================================================================================
+# Load in Libraries
+# ============================================================================================
+
 import os
+
+# Helps with TensorFlow compatibility, and displays less unnecessary alerts
 os.environ["TF_USE_LEGACY_KERAS"] = "1"
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+# Hide warnings
 import warnings
 warnings.filterwarnings("ignore")
 
+# Displays only real errors
 import tensorflow as tf
 tf.get_logger().setLevel("ERROR")
 
+# Libraries required
+
+# DeepFace performs face verification
 from deepface import DeepFace
+# OpenCV is used for image preprocessing
 import cv2
+# Pandas stores and exports the results
 import pandas as pd
 import time
+# SciPy provides statistical tests for analysis
 from scipy.stats import spearmanr, kendalltau, kruskal, pearsonr
 
-# ── Configuratie ──────────────────────────────────────────────────────────────
+# ============================================================================================
+# Experiment settings
+# LIGHT_DISTANCE_CM:
+# Distance between the light source and the participant.
+# Images are processed from the largest distance (135 cm) to the smallest distance (15 cm).
+#
+# THRESHOLD:
+# Maximum cosine distance that is still considered a successful match.
+#
+# USE_CLAHE:
+# Enables image contrast enhancement before face verification.
+# ============================================================================================
+
+# ── Configuration ──────────────────────────────────────────────────────────────
 LIGHT_DISTANCES_CM = list(range(15, 136, 15))[::-1]  # 135,120,...,15
 SUBJECTS           = ["s01", "s02", "s03", "s04", "s05",
                       "s06", "s07", "s08", "s09", "s10"]
@@ -25,13 +53,24 @@ THRESHOLD          = 0.40
 USE_CLAHE          = True
 VALID_EXTENSIONS   = [".jpg", ".jpeg"]
 
-# ── Bestand zoeken (.jpg / .jpeg) ────────────────────────────────────────────
+# ============================================================================================
+# Search for an image file by checking both .jpg and .jpeg extensions.
+# Returns the full file path if the image exists.
+# ============================================================================================
+
+# ── Image Search (.jpg / .jpeg) ────────────────────────────────────────────
 def find_image(base_path_without_ext):
     for ext in VALID_EXTENSIONS:
         candidate = base_path_without_ext + ext
         if os.path.exists(candidate):
             return candidate
     return None
+
+# ============================================================================================
+# Improve image contrast using CLAHE (Contrast Limited Adaptive Histogram Equalization).
+# This technique increases local contrast without over-amplifying bright regions.
+# The goal is to improve face visibility under different lighting conditions.
+# ============================================================================================
 
 # ── CLAHE preprocessing ───────────────────────────────────────────────────────
 def apply_clahe(img_path):
@@ -43,9 +82,11 @@ def apply_clahe(img_path):
     l = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(l)
     return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
 
+# Load the image with or without CLAHE preprocessing
 def load_img(path):
     return apply_clahe(path) if USE_CLAHE else path
 
+# Calculate the relative light intensity using the inverse square law
 def illuminance(dist_cm):
     """Relatieve lichtsterkte via inverse kwadraatwet (genormaliseerd op 90cm=1.0)."""
     return round((90 / dist_cm) ** 2, 4)
@@ -57,6 +98,15 @@ def progress(done, total, subject, dist_cm):
     filled = int(width * pct)
     bar    = "█" * filled + "░" * (width - filled)
     print(f"\r  [{bar}] {done}/{total}  {subject} @ {dist_cm}cm   ", end="", flush=True)
+
+# ============================================================================================
+# Main experiment
+#
+# Each participant is compared with every image taken under different
+# lighting distances.
+#
+# For every comparison, DeepFace determines whether both images belong to the same person.
+# ============================================================================================
 
 # ── Hoofdloop ─────────────────────────────────────────────────────────────────
 records  = []
@@ -81,6 +131,7 @@ for subject in SUBJECTS:
         test_path = find_image(os.path.join(subject_dir, f"{dist_cm}cm"))
         progress(done, total, subject, dist_cm)
 
+        # Store information that is identical for every comparison
         base = {
             "subject"         : subject,
             "light_dist_cm"   : dist_cm,
@@ -91,6 +142,7 @@ for subject in SUBJECTS:
             "test_path"       : test_path,
         }
 
+        # Skip the comparison if the test image is missing.
         if test_path is None:
             records.append({**base,
                             "cosine_dist"   : None,
@@ -108,6 +160,9 @@ for subject in SUBJECTS:
 
         try:
             t0 = time.time()
+
+            # Perform face verification 
+            # DeepFace detects, aligns, and compares both faces
             result = DeepFace.verify(
                 img1_path         = load_img(ref_path),
                 img2_path         = load_img(test_path),
@@ -179,7 +234,7 @@ elapsed = round(time.time() - t_start, 1)
 df = pd.DataFrame(records)
 out_csv = f"results_{'clahe' if USE_CLAHE else 'raw'}_15to135.csv"
 df.to_csv(out_csv, index=False)
-print(f"\n\n✅ Klaar in {elapsed}s — {len(records)} rijen opgeslagen in {out_csv}\n")
+print(f"\n\n Klaar in {elapsed}s — {len(records)} rijen opgeslagen in {out_csv}\n")
 
 # ── Samenvatting per lichtafstand ─────────────────────────────────────────────
 df_v = df[df["cosine_dist"].notna()]   # alleen valide rijen
