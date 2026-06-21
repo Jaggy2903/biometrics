@@ -44,7 +44,7 @@ The project is installed via pip:
 pip install deepface
 ```
 
-This automatically installs required dependencies such as:
+This automatically installs required dependencies:
 
 * TensorFlow
 * OpenCV
